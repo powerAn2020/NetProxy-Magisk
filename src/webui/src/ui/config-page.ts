@@ -399,33 +399,36 @@ export class ConfigPageManager {
 
       const menu = document.createElement("mdui-menu");
 
-      // 全部测试
-      const testItem = document.createElement("mdui-menu-item");
-      testItem.innerHTML = `<mdui-icon slot="icon" name="playlist_play"></mdui-icon>${I18nService.t("config.menu.test_all")}`;
-      testItem.addEventListener("click", () => {
-        dropdown.open = false;
-        this.testGroupLatency(group.name);
-      });
-      menu.appendChild(testItem);
+      // 非负载均衡分组的节点操作
+      if (group.type !== "balancer") {
+        // 全部测试
+        const testItem = document.createElement("mdui-menu-item");
+        testItem.innerHTML = `<mdui-icon slot="icon" name="playlist_play"></mdui-icon>${I18nService.t("config.menu.test_all")}`;
+        testItem.addEventListener("click", () => {
+          dropdown.open = false;
+          this.testGroupLatency(group.name);
+        });
+        menu.appendChild(testItem);
 
-      // 按延迟排序
-      const sortItem = document.createElement("mdui-menu-item");
-      sortItem.innerHTML = `<mdui-icon slot="icon" name="sort"></mdui-icon>${I18nService.t("config.menu.sort")}`;
-      sortItem.addEventListener("click", () => {
-        dropdown.open = false;
-        this.sortGroupNodes(group.name);
-      });
-      menu.appendChild(sortItem);
+        // 按延迟排序
+        const sortItem = document.createElement("mdui-menu-item");
+        sortItem.innerHTML = `<mdui-icon slot="icon" name="sort"></mdui-icon>${I18nService.t("config.menu.sort")}`;
+        sortItem.addEventListener("click", () => {
+          dropdown.open = false;
+          this.sortGroupNodes(group.name);
+        });
+        menu.appendChild(sortItem);
 
-      // 清理无效节点
-      const cleanItem = document.createElement("mdui-menu-item");
-      cleanItem.innerHTML = `<mdui-icon slot="icon" name="delete_sweep"></mdui-icon>${I18nService.t("config.menu.clean")}`;
-      cleanItem.style.color = "var(--mdui-color-error)";
-      cleanItem.addEventListener("click", () => {
-        dropdown.open = false;
-        this.deleteInvalidNodes(group.name);
-      });
-      menu.appendChild(cleanItem);
+        // 清理无效节点
+        const cleanItem = document.createElement("mdui-menu-item");
+        cleanItem.innerHTML = `<mdui-icon slot="icon" name="delete_sweep"></mdui-icon>${I18nService.t("config.menu.clean")}`;
+        cleanItem.style.color = "var(--mdui-color-error)";
+        cleanItem.addEventListener("click", () => {
+          dropdown.open = false;
+          this.deleteInvalidNodes(group.name);
+        });
+        menu.appendChild(cleanItem);
+      }
 
       // 订阅专用操作
       if (group.type === "subscription") {
@@ -446,15 +449,88 @@ export class ConfigPageManager {
         menu.appendChild(deleteItem);
       }
 
+      // 负载均衡专用操作
+      if (group.type === "balancer") {
+        const balancerName = group.name.replace(/^⚖ /, "");
+
+        const editItem = document.createElement("mdui-menu-item");
+        editItem.innerHTML = `<mdui-icon slot="icon" name="edit"></mdui-icon>${I18nService.t("config.menu.edit")}`;
+        editItem.addEventListener("click", () => {
+          dropdown.open = false;
+          this.openBalancerDialog(balancerName);
+        });
+        menu.appendChild(editItem);
+
+        const deleteItem = document.createElement("mdui-menu-item");
+        deleteItem.innerHTML = `<mdui-icon slot="icon" name="delete"></mdui-icon>${I18nService.t("config.menu.delete")}`;
+        deleteItem.style.color = "var(--mdui-color-error)";
+        deleteItem.addEventListener("click", () => {
+          dropdown.open = false;
+          this.deleteBalancer(balancerName);
+        });
+        menu.appendChild(deleteItem);
+      }
+
       dropdown.appendChild(menu);
       actions.appendChild(dropdown);
       panel.appendChild(actions);
 
-      // 创建列表容器
-      const list = document.createElement("mdui-list");
-      list.id = `config-list-${group.name}`;
-      list.className = "config-group-list";
-      panel.appendChild(list);
+      // 负载均衡分组的特殊面板内容
+      if (group.type === "balancer") {
+        const balancerName = group.name.replace(/^⚖ /, "");
+        const safeName = balancerName.replace(/ /g, "_");
+        const expectedFile = `${safeName}.json`;
+        const isActive = this._cachedCurrentConfig === expectedFile;
+        const balancerPanel = document.createElement("div");
+        balancerPanel.style.cssText = "padding: 16px; display: flex; flex-direction: column; gap: 12px;";
+        balancerPanel.innerHTML = `
+          <div style="padding: 16px; border-radius: 12px; background: var(--mdui-color-surface-variant); display: flex; align-items: center; gap: 12px;">
+            <mdui-icon name="balance" style="font-size: 32px; color: var(--mdui-color-primary);"></mdui-icon>
+            <div style="flex: 1;">
+              <div style="font-weight: 500; font-size: 16px;">${balancerName}</div>
+              <div style="font-size: 13px; color: var(--mdui-color-on-surface-variant); margin-top: 4px;">
+                ${I18nService.t("config.balancer_type")}: <span id="balancer-info-${balancerName}" style="color: var(--mdui-color-primary);">...</span>
+              </div>
+            </div>
+            <mdui-icon id="balancer-check-${balancerName}" name="check_circle" style="font-size: 24px; color: var(--mdui-color-primary); display: ${isActive ? 'block' : 'none'};"></mdui-icon>
+          </div>
+          <mdui-button variant="${isActive ? "tonal" : "filled"}" icon="${isActive ? "check" : "play_arrow"}" id="balancer-switch-${balancerName}" style="width: 100%;">
+            ${isActive ? I18nService.t("config.balancer_active") : I18nService.t("config.balancer_switch")}
+          </mdui-button>
+        `;
+        panel.appendChild(balancerPanel);
+
+        // 异步加载 balancer 详情
+        ConfigService.getBalancers().then((balancers) => {
+          const b = balancers.find((x) => x.name === balancerName);
+          if (b) {
+            const infoEl = document.getElementById(`balancer-info-${balancerName}`);
+            if (infoEl) {
+              const strategyMap: Record<string, string> = {
+                random: "随机 (Random)",
+                roundRobin: "轮询 (Round Robin)",
+                leastPing: "最低延迟 (Least Ping)",
+                leastLoad: "最稳定 (Least Load)",
+              };
+              infoEl.textContent = strategyMap[b.strategy] || b.strategy;
+            }
+          }
+        });
+
+        // 切换按钮事件
+        setTimeout(() => {
+          const switchBtn = document.getElementById(`balancer-switch-${balancerName}`);
+          switchBtn?.addEventListener("click", () => {
+            this.switchToBalancer(balancerName);
+          });
+        }, 100);
+      } else {
+        // 普通节点列表
+        const list = document.createElement("mdui-list");
+        list.id = `config-list-${group.name}`;
+        list.className = "config-group-list";
+        panel.appendChild(list);
+      }
 
       tabsEl.appendChild(panel);
     }
@@ -501,6 +577,12 @@ export class ConfigPageManager {
   async renderActiveTab(groupName) {
     const group = this._cachedGroups.find((g) => g.name === groupName);
     if (!group) return;
+
+    // 负载均衡分组: 直接更新按钮状态 (避免调用 render 导致递归)
+    if (group.type === "balancer") {
+      this.updateAllBalancerStates();
+      return;
+    }
 
     const listEl = document.getElementById(`config-list-${groupName}`);
     if (!listEl) return;
@@ -1160,4 +1242,288 @@ export class ConfigPageManager {
       toast(I18nService.t("config.toast.import_failed") + error.message);
     }
   }
+
+  // ===================== 负载均衡管理 =====================
+
+  _editingBalancerName: string | null = null;
+
+  async openBalancerDialog(editName: string | null = null): Promise<void> {
+    const dialog = document.getElementById("balancer-dialog") as any;
+    const nameInput = document.getElementById("balancer-name") as any;
+    const strategySelect = document.getElementById("balancer-strategy") as any;
+    const subGroupSelect = document.getElementById("balancer-sub-group") as any;
+    const regexInput = document.getElementById("balancer-sub-regex") as any;
+    const matchCount = document.getElementById("balancer-match-count") as any;
+    const manualList = document.getElementById("balancer-manual-list") as any;
+
+    if (!dialog || !nameInput || !strategySelect) return;
+
+    // 重置
+    nameInput.value = "";
+    strategySelect.value = "leastPing";
+    if (regexInput) regexInput.value = "";
+    if (matchCount) matchCount.textContent = "";
+    this._editingBalancerName = editName;
+
+    // 填充订阅分组下拉
+    if (subGroupSelect) {
+      subGroupSelect.innerHTML = "";
+      const groups = this._cachedGroups || [];
+      for (const g of groups) {
+        if (g.type === "subscription") {
+          const item = document.createElement("mdui-menu-item") as any;
+          item.value = g.dirName;
+          item.textContent = g.name;
+          subGroupSelect.appendChild(item);
+        }
+      }
+    }
+
+    // 填充手动选择列表
+    if (manualList) {
+      manualList.innerHTML = "";
+      const groups = this._cachedGroups || [];
+      for (const g of groups) {
+        if (g.type === "balancer") continue;
+        for (const config of g.configs) {
+          const displayName = config.replace(/\.json$/i, "");
+          const fullPath = g.dirName ? `${g.dirName}/${config}` : config;
+
+          const item = document.createElement("mdui-list-item") as any;
+          item.innerHTML = `
+            <mdui-checkbox slot="icon" value="${fullPath}"></mdui-checkbox>
+            <span>${g.name} / ${displayName}</span>
+          `;
+          manualList.appendChild(item);
+        }
+      }
+    }
+
+    // 如果是编辑模式，加载现有数据
+    if (editName) {
+      dialog.headline = I18nService.t("config.balancer_edit_title");
+      const balancers = await ConfigService.getBalancers();
+      const existing = balancers.find((b) => b.name === editName);
+      if (existing) {
+        nameInput.value = existing.name;
+        nameInput.disabled = true;
+        strategySelect.value = existing.strategy;
+
+        // 恢复来源选择
+        for (const src of existing.sources) {
+          if (src.type === "subscription" && subGroupSelect) {
+            subGroupSelect.value = src.group || "";
+            if (regexInput) regexInput.value = src.regex || "";
+          } else if (src.type === "manual" && manualList && src.files) {
+            const checkboxes = manualList.querySelectorAll("mdui-checkbox");
+            checkboxes.forEach((cb: any) => {
+              if (src.files!.includes(cb.value)) {
+                cb.checked = true;
+              }
+            });
+          }
+        }
+      }
+    } else {
+      dialog.headline = I18nService.t("config.balancer_dialog_title");
+      nameInput.disabled = false;
+    }
+
+    // 正则过滤预览
+    if (regexInput && matchCount) {
+      const updateMatchCount = () => {
+        const selectedGroup = subGroupSelect?.value;
+        const regex = regexInput.value.trim();
+        if (!selectedGroup) {
+          matchCount.textContent = "";
+          return;
+        }
+        const group = (this._cachedGroups || []).find(
+          (g) => g.dirName === selectedGroup,
+        );
+        if (!group) {
+          matchCount.textContent = "";
+          return;
+        }
+        let count = group.configs.length;
+        if (regex) {
+          try {
+            const re = new RegExp(regex);
+            count = group.configs.filter((c) =>
+              re.test(c.replace(/\.json$/i, "")),
+            ).length;
+          } catch (e) {
+            matchCount.textContent = I18nService.t("config.balancer_regex_invalid");
+            return;
+          }
+        }
+        matchCount.textContent = I18nService.t("config.balancer_match_count", {
+          count: String(count),
+        });
+      };
+      regexInput.addEventListener("input", updateMatchCount);
+      subGroupSelect?.addEventListener("change", updateMatchCount);
+      // 初始触发一次
+      setTimeout(updateMatchCount, 200);
+    }
+
+    dialog.open = true;
+  }
+
+  async saveBalancer(): Promise<void> {
+    const dialog = document.getElementById("balancer-dialog") as any;
+    const nameInput = document.getElementById("balancer-name") as any;
+    const strategySelect = document.getElementById("balancer-strategy") as any;
+    const subGroupSelect = document.getElementById("balancer-sub-group") as any;
+    const regexInput = document.getElementById("balancer-sub-regex") as any;
+    const manualList = document.getElementById("balancer-manual-list") as any;
+    const sourceTabs = document.getElementById("balancer-source-tabs") as any;
+
+    if (!nameInput || !strategySelect) return;
+
+    const name = nameInput.value.trim();
+    const strategy = strategySelect.value;
+
+    if (!name) {
+      toast(I18nService.t("config.balancer_enter_name"));
+      return;
+    }
+
+    // 收集来源
+    const sources: any[] = [];
+    const activeTab = sourceTabs?.value || "subscription";
+
+    if (activeTab === "subscription") {
+      const group = subGroupSelect?.value;
+      if (!group) {
+        toast(I18nService.t("config.balancer_select_group"));
+        return;
+      }
+      sources.push({
+        type: "subscription",
+        group: group,
+        regex: regexInput?.value?.trim() || "",
+      });
+    } else {
+      // 手动选择
+      const checkedFiles: string[] = [];
+      if (manualList) {
+        const checkboxes = manualList.querySelectorAll("mdui-checkbox");
+        checkboxes.forEach((cb: any) => {
+          if (cb.checked) {
+            checkedFiles.push(cb.value);
+          }
+        });
+      }
+      if (checkedFiles.length === 0) {
+        toast(I18nService.t("config.balancer_select_nodes"));
+        return;
+      }
+      sources.push({
+        type: "manual",
+        files: checkedFiles,
+      });
+    }
+
+    if (dialog) dialog.open = false;
+
+    toast(I18nService.t("config.balancer_creating"));
+
+    setTimeout(async () => {
+      try {
+        let result;
+        if (this._editingBalancerName) {
+          result = await ConfigService.updateBalancer(name, strategy, sources);
+        } else {
+          result = await ConfigService.createBalancer(name, strategy, sources);
+        }
+
+        if (result.success) {
+          toast(I18nService.t("config.balancer_created"));
+          this._cachedGroups = null;
+          this._cachedConfigInfos.clear();
+          await this.update(true);
+        } else {
+          toast(
+            I18nService.t("config.balancer_create_failed") +
+              (result.error || ""),
+          );
+        }
+      } catch (error: any) {
+        toast(I18nService.t("config.balancer_create_failed") + error.message);
+      }
+    }, 50);
+  }
+
+  async deleteBalancer(name: string): Promise<void> {
+    const confirmed = await this.ui.confirm(
+      I18nService.t("config.balancer_delete_confirm", { name }),
+    );
+    if (!confirmed) return;
+
+    try {
+      const result = await ConfigService.deleteBalancer(name);
+      if (result.success) {
+        toast(I18nService.t("config.balancer_deleted"));
+        this._cachedGroups = null;
+        this._cachedConfigInfos.clear();
+        await this.update(true);
+      } else {
+        toast(
+          I18nService.t("config.toast.delete_failed") + (result.error || ""),
+        );
+      }
+    } catch (error: any) {
+      toast(I18nService.t("config.toast.delete_failed") + error.message);
+    }
+  }
+
+  async switchToBalancer(name: string): Promise<void> {
+    try {
+      toast(I18nService.t("config.balancer_switching"));
+      const result = await ConfigService.switchToBalancer(name);
+      
+      if (result && result.restartRequired) {
+        toast(I18nService.t("config.toast.balancer_restart_required"));
+      } else {
+        toast(I18nService.t("config.toast.switch_success") + name);
+      }
+      
+      this._cachedCurrentConfig = `${name.replace(/ /g, "_")}.json`;
+      this.updateAllBalancerStates();
+      if (this._selectedTab) {
+        await this.renderActiveTab(this._selectedTab);
+      }
+      await this.ui.statusPage.update();
+    } catch (error: any) {
+      toast(I18nService.t("config.toast.switch_failed") + error.message);
+    }
+  }
+
+  updateAllBalancerStates() {
+    if (!this._cachedGroups) return;
+    for (const group of this._cachedGroups) {
+      if (group.type === "balancer") {
+        const balancerName = group.name.replace(/^⚖ /, "");
+        const safeName = balancerName.replace(/ /g, "_");
+        const expectedFile = `${safeName}.json`;
+        const isActive = this._cachedCurrentConfig === expectedFile;
+
+        const switchBtn = document.getElementById(`balancer-switch-${balancerName}`) as any;
+        if (switchBtn) {
+          switchBtn.variant = isActive ? "tonal" : "filled";
+          switchBtn.icon = isActive ? "check" : "play_arrow";
+          switchBtn.textContent = isActive
+            ? I18nService.t("config.balancer_active")
+            : I18nService.t("config.balancer_switch");
+        }
+
+        const checkIcon = document.getElementById(`balancer-check-${balancerName}`);
+        if (checkIcon) {
+          checkIcon.style.display = isActive ? "block" : "none";
+        }
+      }
+    }
+  }
 }
+

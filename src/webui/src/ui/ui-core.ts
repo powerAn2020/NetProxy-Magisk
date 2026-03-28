@@ -301,6 +301,26 @@ export class UI {
         await this.configPage.saveSubscription();
       });
 
+    // 负载均衡对话框事件
+    document
+      .getElementById("create-balancer")
+      ?.addEventListener("click", () => {
+        importMenu.open = false;
+        this.configPage.openBalancerDialog();
+      });
+
+    document
+      .getElementById("balancer-cancel")
+      ?.addEventListener("click", () => {
+        (document.getElementById("balancer-dialog") as any).open = false;
+      });
+
+    document
+      .getElementById("balancer-save")
+      ?.addEventListener("click", async () => {
+        await this.configPage.saveBalancer();
+      });
+
     document
       .getElementById("config-cancel-btn")
       ?.addEventListener("click", () => {

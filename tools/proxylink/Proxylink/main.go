@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"proxylink/pkg/balancer"
 	"proxylink/pkg/encoder"
 	"proxylink/pkg/generator"
 	"proxylink/pkg/model"
@@ -31,6 +32,15 @@ var (
 )
 
 func main() {
+	// 子命令模式: proxylink balancer ...
+	if len(os.Args) > 1 && os.Args[1] == "balancer" {
+		if err := handleBalancerCommand(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "错误: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	flag.Usage = usage
 	flag.Parse()
 
@@ -189,6 +199,7 @@ func writeMultipleFiles(profiles []*model.ProfileItem) error {
 	}
 
 	ext := getFileExtension()
+	nameCount := make(map[string]int) // 跟踪文件名使用次数，避免同名覆盖
 
 	for i, profile := range profiles {
 		output, err := formatSingleProfile(profile)
@@ -198,9 +209,16 @@ func writeMultipleFiles(profiles []*model.ProfileItem) error {
 		}
 
 		// 生成文件名
-		filename := sanitizeFilename(profile.Remarks)
-		if filename == "" {
-			filename = fmt.Sprintf("node_%d", i+1)
+		baseName := sanitizeFilename(profile.Remarks)
+		if baseName == "" {
+			baseName = fmt.Sprintf("node_%d", i+1)
+		}
+
+		// 处理重复文件名
+		nameCount[baseName]++
+		filename := baseName
+		if nameCount[baseName] > 1 {
+			filename = fmt.Sprintf("%s_%d", baseName, nameCount[baseName])
 		}
 		filename = filename + ext
 
@@ -333,4 +351,103 @@ func toJSON(data interface{}) (string, error) {
 		jsonBytes, err = json.Marshal(data)
 	}
 	return string(jsonBytes), err
+}
+
+// handleBalancerCommand 处理 balancer 子命令
+func handleBalancerCommand(args []string) error {
+	if len(args) == 0 {
+		balancerUsage()
+		return nil
+	}
+
+	subcmd := args[0]
+	fs := flag.NewFlagSet("balancer "+subcmd, flag.ExitOnError)
+	nameFlag := fs.String("name", "", "负载均衡组名称")
+	strategyFlag := fs.String("strategy", "", "策略: random, roundRobin, leastPing, leastLoad")
+	sourcesFlag := fs.String("sources", "", "来源 JSON")
+	dirFlag := fs.String("dir", "", "outbounds 目录路径")
+
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+
+	outboundsDir := *dirFlag
+	if outboundsDir == "" {
+		return fmt.Errorf("必须指定 -dir 参数")
+	}
+
+	switch subcmd {
+	case "create":
+		if err := balancer.Create(outboundsDir, *nameFlag, *strategyFlag, *sourcesFlag); err != nil {
+			return err
+		}
+		fmt.Println("success")
+		return nil
+
+	case "update":
+		if err := balancer.Update(outboundsDir, *nameFlag, *strategyFlag, *sourcesFlag); err != nil {
+			return err
+		}
+		fmt.Println("success")
+		return nil
+
+	case "delete":
+		if err := balancer.Delete(outboundsDir, *nameFlag); err != nil {
+			return err
+		}
+		fmt.Println("success")
+		return nil
+
+	case "list":
+		return balancer.List(outboundsDir)
+
+	case "generate":
+		outputPath, err := balancer.Generate(outboundsDir, *nameFlag)
+		if err != nil {
+			return err
+		}
+		fmt.Println(outputPath)
+		return nil
+
+	case "regenerate-all":
+		count, err := balancer.RegenerateAll(outboundsDir)
+		if err != nil {
+			return err
+		}
+		fmt.Println(count)
+		return nil
+
+	case "-h", "--help", "help":
+		balancerUsage()
+		return nil
+
+	default:
+		return fmt.Errorf("未知子命令: %s", subcmd)
+	}
+}
+
+func balancerUsage() {
+	fmt.Println(`proxylink balancer - 负载均衡管理
+
+用法:
+  proxylink balancer <子命令> [选项]
+
+子命令:
+  create          创建负载均衡组
+  update          更新负载均衡组
+  delete          删除负载均衡组
+  list            列出所有负载均衡组
+  generate        生成 Xray 配置
+  regenerate-all  重新生成所有配置
+
+选项:
+  -name string     负载均衡组名称
+  -strategy string 策略: random, roundRobin, leastPing, leastLoad
+  -sources string  来源 JSON 数组
+  -dir string      outbounds 目录路径 (必需)
+
+示例:
+  proxylink balancer create -name "负载均衡" -strategy leastPing -sources '[{"type":"subscription","group":"sub_my"}]' -dir /data/adb/modules/netproxy/config/xray/outbounds
+  proxylink balancer list -dir /data/adb/modules/netproxy/config/xray/outbounds
+  proxylink balancer generate -name "负载均衡" -dir /data/adb/modules/netproxy/config/xray/outbounds`)
 }

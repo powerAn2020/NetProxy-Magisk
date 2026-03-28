@@ -193,9 +193,15 @@ update_subscription() {
   # -sub: 订阅链接
   # -format xray: 输出 xray 格式
   # -dir: 输出目录 (每个节点单独一个文件)
-  if "$MODDIR/bin/proxylink" -sub "$url" -insecure -dns -format xray -dir "$sub_dir" >> "$LOG_FILE" 2>&1; then
+  if "$MODDIR/bin/proxylink" -sub "$url" -insecure -format xray -dir "$sub_dir" >> "$LOG_FILE" 2>&1; then
     log "INFO" "订阅更新完成"
     echo "已导入节点"
+
+    # 自动重新生成所有负载均衡配置
+    if [ -d "$OUTBOUNDS_DIR/_balancers" ] && [ "$(ls -A "$OUTBOUNDS_DIR/_balancers" 2>/dev/null)" ]; then
+      log "INFO" "检测到负载均衡配置，自动重新生成..."
+      "$MODDIR/bin/proxylink" balancer regenerate-all -dir "$OUTBOUNDS_DIR" >> "$LOG_FILE" 2>&1 || true
+    fi
   else
     log "ERROR" "订阅更新失败"
     echo "错误: 订阅更新失败，请查看日志"

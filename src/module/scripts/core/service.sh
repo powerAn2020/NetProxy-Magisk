@@ -87,6 +87,11 @@ do_start() {
   elif [ "$outbound_mode" = "direct" ]; then
     routing_config="$CONFDIR/routing/direct.json"
     log "INFO" "直连模式: 使用 direct.json"
+    # 直连模式下不使用负载均衡配置，替换为 freedom 出站
+    if grep -q '"balancers"' "$outbound_config" 2>/dev/null; then
+      outbound_config="$CONFDIR/routing/internal/proxy_freedom.json"
+      log "INFO" "直连模式: 忽略负载均衡配置, 使用 freedom 出站"
+    fi
   fi
 
   [ -f "$routing_config" ] || die "路由配置文件不存在: $routing_config"

@@ -84,6 +84,15 @@ switch_to_freedom() {
 }
 
 #######################################
+# 检测当前是否为负载均衡配置
+#######################################
+is_balancer_config() {
+  local current_config
+  current_config=$(get_current_config)
+  [ -n "$current_config" ] && grep -q '"balancers"' "$current_config" 2>/dev/null
+}
+
+#######################################
 # 恢复节点出站配置
 #######################################
 restore_proxy_outbound() {
@@ -93,6 +102,12 @@ restore_proxy_outbound() {
   if [ -z "$current_config" ] || [ ! -f "$current_config" ]; then
     log "INFO" "无法获取当前节点配置，使用默认配置"
     current_config="$DEFAULT_OUTBOUND"
+  fi
+
+  # 负载均衡配置需要重启 (无法通过 API 热更新多个 lb-* 出站)
+  if grep -q '"balancers"' "$current_config" 2>/dev/null; then
+    log "INFO" "检测到负载均衡配置，需要重启方式切换模式"
+    return 0  # 标记后续会重启
   fi
 
   log "INFO" "恢复节点配置: $current_config"
@@ -138,6 +153,18 @@ main() {
 
   log "INFO" "========== 切换出站模式 =========="
   log "INFO" "当前模式: $current_mode -> 目标模式: $target_mode"
+
+  # ===== 负载均衡模式检测 =====
+  # 负载均衡配置包含多个 lb-* 出站和 balancers，无法通过 API 热更新
+  # 必须使用重启方式切换
+  if is_balancer_config; then
+    log "INFO" "检测到负载均衡配置，使用重启方式切换模式"
+    update_mode_config "$target_mode"
+    sh "$MODDIR/scripts/core/service.sh" restart >> "$LOG_FILE" 2>&1
+    log "INFO" "========== 模式切换完成 (负载均衡重启) =========="
+    echo "success"
+    return 0
+  fi
 
   # ===== 第一步: 处理出站配置 =====
 

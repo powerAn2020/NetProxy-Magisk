@@ -1,12 +1,29 @@
 import { KSU } from "./ksu.js";
 
 interface ConfigGroup {
-  type: "default" | "subscription";
+  type: "default" | "subscription" | "balancer";
   name: string;
   dirName: string;
   configs: string[];
   url?: string;
   updated?: string;
+}
+
+interface BalancerSource {
+  type: "subscription" | "manual";
+  group?: string;
+  regex?: string;
+  files?: string[];
+}
+
+interface BalancerGroup {
+  name: string;
+  strategy: string;
+  sources: BalancerSource[];
+  created?: string;
+  updated?: string;
+  nodeCount?: number;
+  generatedFile?: string;
 }
 
 interface Subscription {
@@ -74,6 +91,20 @@ export class ConfigService {
         });
       } catch (e) { }
     }
+
+    // 获取负载均衡分组
+    try {
+      const balancers = await this.getBalancers();
+      for (const b of balancers) {
+        groups.push({
+          type: "balancer",
+          name: `⚖ ${b.name}`,
+          dirName: `_balancers`,
+          configs: [], // 负载均衡组不直接展示节点列表
+          updated: b.updated,
+        });
+      }
+    } catch (e) { }
 
     return groups;
   }
@@ -281,5 +312,108 @@ EOF
       }
     }
     throw new Error("操作超时");
+  }
+
+  // ==================== 负载均衡管理 ====================
+
+  static async getBalancers(): Promise<BalancerGroup[]> {
+    try {
+      const result = await KSU.exec(
+        `sh ${KSU.MODULE_PATH}/scripts/config/balancer.sh list`,
+      );
+      const parsed = JSON.parse(result.trim() || "[]");
+      return parsed.map((b: any) => ({
+        name: b.name,
+        strategy: b.strategy,
+        sources: b.sources || [],
+        created: b.created,
+        updated: b.updated,
+      }));
+    } catch (e) {
+      return [];
+    }
+  }
+
+  static async createBalancer(
+    name: string,
+    strategy: string,
+    sources: BalancerSource[],
+  ): Promise<OperationResult> {
+    try {
+      const sourcesJson = JSON.stringify(sources);
+      const escapedSources = sourcesJson.replace(/'/g, "'\\''");
+      const result = await KSU.exec(
+        `sh ${KSU.MODULE_PATH}/scripts/config/balancer.sh create '${name}' '${strategy}' '${escapedSources}'`,
+      );
+      if (result.includes("错误")) {
+        return { success: false, error: result };
+      }
+      return { success: true, output: result };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  static async updateBalancer(
+    name: string,
+    strategy: string,
+    sources: BalancerSource[],
+  ): Promise<OperationResult> {
+    try {
+      const sourcesJson = JSON.stringify(sources);
+      const escapedSources = sourcesJson.replace(/'/g, "'\\''");
+      const result = await KSU.exec(
+        `sh ${KSU.MODULE_PATH}/scripts/config/balancer.sh update '${name}' '${strategy}' '${escapedSources}'`,
+      );
+      if (result.includes("错误")) {
+        return { success: false, error: result };
+      }
+      return { success: true, output: result };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  static async deleteBalancer(name: string): Promise<OperationResult> {
+    try {
+      await KSU.exec(
+        `sh ${KSU.MODULE_PATH}/scripts/config/balancer.sh delete '${name}'`,
+      );
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  }
+
+  static async switchToBalancer(name: string): Promise<{ restartRequired: boolean }> {
+    // 先生成最新配置
+    const genResult = await KSU.exec(
+      `sh ${KSU.MODULE_PATH}/scripts/config/balancer.sh generate '${name}'`,
+    );
+    const generatedPath = genResult.trim();
+
+    if (!generatedPath || generatedPath.includes("错误")) {
+      throw new Error(generatedPath || "生成配置失败");
+    }
+
+    // 切换到生成的配置
+    const pidOutput = await KSU.exec(
+      `pidof -s /data/adb/modules/netproxy/bin/xray 2>/dev/null || echo`,
+    );
+    const isRunning = pidOutput.trim() !== "";
+
+    if (isRunning) {
+      const output = await KSU.exec(
+        `sh ${KSU.MODULE_PATH}/scripts/core/switch-config.sh '${generatedPath}'`,
+      );
+      if (output.includes("RESTART_REQUIRED")) {
+        return { restartRequired: true };
+      }
+    } else {
+      await KSU.exec(
+        `sed -i 's|^CURRENT_CONFIG=.*|CURRENT_CONFIG="${generatedPath}"|' ${KSU.MODULE_PATH}/config/module.conf`,
+      );
+    }
+    return { restartRequired: false };
   }
 }

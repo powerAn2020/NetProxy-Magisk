@@ -27,6 +27,20 @@ hot_switch() {
   log "INFO" "========== 开始热切换配置 =========="
   log "INFO" "新配置: $config_file"
 
+  # 检测是否为负载均衡配置 (包含 balancers)
+  if grep -q '"balancers"' "$config_file" 2>/dev/null; then
+    log "INFO" "检测到负载均衡配置，使用重启方式切换"
+
+    # 更新 module.conf
+    sed -i "s|^CURRENT_CONFIG=.*|CURRENT_CONFIG=\"$config_file\"|" "$MODDIR/config/module.conf"
+    log "INFO" "配置文件已更新"
+
+    # 停止自动重启，输出标志由前端提示用户手动重启
+    echo "RESTART_REQUIRED"
+    log "INFO" "========== 负载均衡切换完成 (待重启) =========="
+    return
+  fi
+
   # 1. 删除现有 proxy 出站
   log "INFO" "删除 proxy 出站..."
   "$XRAY_BIN" api rmo --server="$API_SERVER" "proxy" 2> /dev/null || true
