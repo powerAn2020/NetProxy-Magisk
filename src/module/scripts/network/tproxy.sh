@@ -106,6 +106,10 @@ readonly DEFAULT_MAC_PROXY_MODE="blacklist"
 # block quic
 readonly DEFAULT_BLOCK_QUIC=0
 
+# API port protection (block non-root processes from accessing local Xray API)
+# API port for Xray management (must match 01_api.json listen address)
+readonly DEFAULT_API_PORT="8080"
+
 # Dry-run mode (disabled by default)
 readonly DEFAULT_DRY_RUN=0
 
@@ -219,6 +223,7 @@ load_config() {
     BYPASS_MACS_LIST="${BYPASS_MACS_LIST:-$DEFAULT_BYPASS_MACS_LIST}"
     MAC_PROXY_MODE="${MAC_PROXY_MODE:-$DEFAULT_MAC_PROXY_MODE}"
     BLOCK_QUIC="${BLOCK_QUIC:-$DEFAULT_BLOCK_QUIC}"
+    API_PORT="${API_PORT:-$DEFAULT_API_PORT}"
 
     if [ "$VERBOSE" -eq 1 ]; then
         log Debug "DRY_RUN: $DRY_RUN"
@@ -267,6 +272,7 @@ load_config() {
         log Debug "BYPASS_MACS_LIST: $BYPASS_MACS_LIST"
         log Debug "MAC_PROXY_MODE: $MAC_PROXY_MODE"
         log Debug "BLOCK_QUIC: $BLOCK_QUIC"
+        log Debug "API_PORT: $API_PORT"
     fi
 
     log Info "Configuration loading completed"
@@ -296,6 +302,7 @@ save_runtime_config() {
         echo "TABLE_ID=$TABLE_ID"
         echo "MARK_VALUE=$MARK_VALUE"
         echo "MARK_VALUE6=$MARK_VALUE6"
+        echo "API_PORT=$API_PORT"
     } > "$runtime_file" || {
         log Warn "Failed to save runtime config to $runtime_file"
     }
@@ -1536,6 +1543,7 @@ start_proxy() {
     fi
     log Info "Proxy setup completed"
     block_loopback_traffic enable
+    protect_api_port enable
     [ "$BLOCK_QUIC" -eq 1 ] && block_quic enable
     if [ "$PROXY_IPV6" -eq -1 ]; then
         manage_ipv6 disable || log Warn "Failed to disable IPv6 stack"
@@ -1568,6 +1576,7 @@ stop_proxy() {
     cleanup_ipset
     log Info "Proxy stopped"
     block_loopback_traffic disable
+    protect_api_port disable
     block_quic disable
     if [ "$PROXY_IPV6" -eq -1 ]; then
         manage_ipv6 restore || log Warn "Failed to restore IPv6 settings"
@@ -1585,6 +1594,33 @@ block_loopback_traffic() {
         disable)
             ip6tables -t filter -D OUTPUT -d ::1 -p tcp -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -m tcp --dport "$PROXY_TCP_PORT" -j REJECT
             iptables -t filter -D OUTPUT -d 127.0.0.1 -p tcp -m owner --uid-owner "$CORE_USER" --gid-owner "$CORE_GROUP" -m tcp --dport "$PROXY_TCP_PORT" -j REJECT
+            ;;
+    esac
+}
+
+# Protect the Xray local API port from non-root processes.
+# Only uid=0 (root) is allowed to connect to 127.0.0.1:$API_PORT.
+# Order matters: ACCEPT rule is inserted at the top (-I), REJECT appended (-A).
+protect_api_port() {
+    case "$1" in
+        enable)
+            log Info "Protecting API port $API_PORT: allow root only"
+            # IPv4: allow root, then reject all others
+            iptables -t filter -I OUTPUT -o lo -p tcp --dport "$API_PORT" -m owner --uid-owner 0 -j ACCEPT
+            iptables -t filter -A OUTPUT -o lo -p tcp --dport "$API_PORT" -j REJECT
+            # IPv6: block ::1 access regardless of PROXY_IPV6 (API only listens on 127.0.0.1
+            #        but add rule for defense-in-depth in case config changes)
+            ip6tables -t filter -I OUTPUT -o lo -p tcp --dport "$API_PORT" -m owner --uid-owner 0 -j ACCEPT 2>/dev/null || true
+            ip6tables -t filter -A OUTPUT -o lo -p tcp --dport "$API_PORT" -j REJECT 2>/dev/null || true
+            log Info "API port $API_PORT protection enabled"
+            ;;
+        disable)
+            log Info "Removing API port $API_PORT protection rules"
+            iptables -t filter -D OUTPUT -o lo -p tcp --dport "$API_PORT" -m owner --uid-owner 0 -j ACCEPT 2>/dev/null || true
+            iptables -t filter -D OUTPUT -o lo -p tcp --dport "$API_PORT" -j REJECT 2>/dev/null || true
+            ip6tables -t filter -D OUTPUT -o lo -p tcp --dport "$API_PORT" -m owner --uid-owner 0 -j ACCEPT 2>/dev/null || true
+            ip6tables -t filter -D OUTPUT -o lo -p tcp --dport "$API_PORT" -j REJECT 2>/dev/null || true
+            log Info "API port $API_PORT protection disabled"
             ;;
     esac
 }
